@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<title>Mac Remote</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #14161a; --muted: #6b7280;
+    --accent: #2563eb; --track: #e5e7eb; --border: #e5e7eb;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --card: #181b21; --text: #eef0f3; --muted: #9098a6; --accent: #60a5fa; --track: #2a2f38; --border: #262a33; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100dvh; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    display: grid; place-items: center; padding: 16px;
+  }
+  main {
+    width: 100%; max-width: 420px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 20px; padding: 20px; display: grid; gap: 18px;
+  }
+  header { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); }
+  #status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  #status-dot.live { background: #22c55e; }
+  .art {
+    width: 100%; aspect-ratio: 1; border-radius: 14px; background: var(--track);
+    display: grid; place-items: center; overflow: hidden; color: var(--muted); font-size: 56px;
+  }
+  .art img { width: 100%; height: 100%; object-fit: cover; }
+  .meta { text-align: center; min-height: 72px; }
+  #title { font-size: 20px; font-weight: 650; margin: 0 0 4px; overflow-wrap: anywhere; }
+  #artist, #album { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+  .times { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 4px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; margin: 0; }
+  .controls { display: flex; justify-content: center; align-items: center; gap: 20px; }
+  button {
+    border: 0; background: transparent; color: var(--text); cursor: pointer;
+    width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center;
+  }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .35; cursor: default; }
+  button svg { width: 28px; height: 28px; fill: currentColor; }
+  #play { width: 72px; height: 72px; background: var(--accent); color: #fff; }
+  #play svg { width: 34px; height: 34px; }
+  .volume { display: flex; align-items: center; gap: 8px; }
+  .volume button { width: 44px; height: 44px; flex: none; }
+  .volume button svg { width: 22px; height: 22px; }
+  #message { text-align: center; color: var(--muted); font-size: 14px; margin: 0; min-height: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span><span id="status-dot"></span><span id="player">Connecting…</span></span>
+    <span>Mac Remote</span>
+  </header>
+
+  <div class="art" id="art" aria-hidden="true">♪</div>
+
+  <div class="meta" aria-live="polite">
+    <p id="title">Nothing playing</p>
+    <p id="artist"></p>
+    <p id="album"></p>
+  </div>
+
+  <div>
+    <input id="seek" type="range" min="0" max="0" value="0" aria-label="Seek" disabled>
+    <div class="times"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
+  </div>
+
+  <div class="controls">
+    <button id="previous" aria-label="Previous track" disabled><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+    <button id="play" aria-label="Play" disabled><svg viewBox="0 0 24 24"><path id="play-icon" d="M8 5v14l11-7z"/></svg></button>
+    <button id="next" aria-label="Next track" disabled><svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+  </div>
+
+  <div class="volume">
+    <button id="mute" aria-label="Mute" aria-pressed="false"><svg viewBox="0 0 24 24"><path id="mute-icon" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg></button>
+    <input id="volume" type="range" min="0" max="100" value="0" aria-label="Volume">
+  </div>
+
+  <p id="message" role="status"></p>
+</main>
+
+<script>
+  const ICON_PLAY = 'M8 5v14l11-7z';
+  const ICON_PAUSE = 'M6 19h4V5H6v14zm8-14v14h4V5h-4z';
+  const ICON_SOUND = 'M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z';
+  const ICON_MUTED = 'M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zM19 12c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z';
+
+  const $ = (id) => document.getElementById(id);
+  const token = new URLSearchParams(location.search).get('token') || '';
+  const withToken = (path) => token ? `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : path;
+
+  let state = null;
+  let artKey = '';
+  let seeking = false;
+  let draggingVolume = false;
+
+  const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+  function render(next) {
+    state = next;
+    const track = next.track;
+    const active = !!track;
+    const playing = next.state === 'playing';
+
+    $('player').textContent = next.player ?? 'No media player open';
+    $('title').textContent = track?.title || (next.player ? 'Nothing playing' : 'Open Spotify or Music on your Mac');
+    $('artist').textContent = track?.artist ?? '';
+    $('album').textContent = track?.album ?? '';
+
+    for (const id of ['play', 'previous', 'next', 'seek']) $(id).disabled = !active;
+    $('play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    $('play-icon').setAttribute('d', playing ? ICON_PAUSE : ICON_PLAY);
+
+    $('seek').max = track?.duration ?? 0;
+    if (!seeking) $('seek').value = track?.position ?? 0;
+    $('duration').textContent = fmt(track?.duration ?? 0);
+    $('elapsed').textContent = fmt(+$('seek').value);
+
+    const volumeKnown = next.volume !== null && next.volume !== undefined;
+    $('volume').disabled = !volumeKnown;
+    if (!draggingVolume && volumeKnown) $('volume').value = next.volume;
+    $('mute').setAttribute('aria-pressed', String(next.muted));
+    $('mute').setAttribute('aria-label', next.muted ? 'Unmute' : 'Mute');
+    $('mute-icon').setAttribute('d', next.muted ? ICON_MUTED : ICON_SOUND);
+
+    const key = track?.hasArtwork ? `${next.player}|${track.title}|${track.artist}|${track.album}` : '';
+    if (key !== artKey) {
+      artKey = key;
+      const art = $('art');
+      art.textContent = '♪';
+      if (key) {
+        const img = new Image();
+        img.alt = '';
+        img.onload = () => { art.textContent = ''; art.append(img); };
+        img.src = withToken(`/artwork?k=${encodeURIComponent(key)}`);
+      }
+    }
+  }
+
+  async function api(path, body) {
+    $('message').textContent = '';
+    try {
+      const res = await fetch(withToken(path), {
+        method: 'POST',
+        headers: body ? { 'content-type': 'application/json' } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(res.status === 401 ? 'Unauthorized: open this page with ?token=YOUR_TOKEN' : data.error);
+      render(data);
+    } catch (err) {
+      $('message').textContent = err.message;
+    }
+  }
+
+  $('play').onclick = () => api(state?.state === 'playing' ? '/pause' : '/play');
+  $('previous').onclick = () => api('/previous');
+  $('next').onclick = () => api('/next');
+  $('mute').onclick = () => api('/mute');
+
+  $('seek').oninput = () => { seeking = true; $('elapsed').textContent = fmt(+$('seek').value); };
+  $('seek').onchange = async () => { await api('/seek', { position: +$('seek').value }); seeking = false; };
+
+  $('volume').oninput = () => { draggingVolume = true; };
+  $('volume').onchange = async () => { await api('/volume', { level: +$('volume').value }); draggingVolume = false; };
+
+  // Advance the progress bar locally between server updates.
+  setInterval(() => {
+    const t = state?.track;
+    if (!t || state.state !== 'playing' || seeking) return;
+    t.position = Math.min(t.position + 1, t.duration);
+    $('seek').value = t.position;
+    $('elapsed').textContent = fmt(t.position);
+  }, 1000);
+
+  function connect() {
+    const es = new EventSource(withToken('/events'));
+    es.onopen = () => { $('status-dot').classList.add('live'); $('message').textContent = ''; };
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.error) $('message').textContent = data.error;
+      else render(data);
+    };
+    es.onerror = async () => {
+      $('status-dot').classList.remove('live');
+      const res = await fetch(withToken('/now-playing')).catch(() => null);
+      $('message').textContent = res?.status === 401
+        ? 'Unauthorized: open this page with ?token=YOUR_TOKEN'
+        : 'Connection lost, retrying…';
+      if (res?.status === 401) es.close();
+    };
+  }
+  connect();
+</script>
+</body>
+</html>
