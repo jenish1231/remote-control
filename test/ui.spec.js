@@ -78,6 +78,100 @@ test('no player: shows empty state and disables transport', async ({ page }) => 
   }
 });
 
+test.describe('trackpad', () => {
+  const PAD = TOKEN + '?token=s3cret';
+  const calls = async (page) => (await page.request.get(TOKEN + '__pointer-calls')).json();
+  const pad = (page) => page.getByRole('region', { name: 'Trackpad' });
+
+  test.beforeEach(async ({ page }) => {
+    await page.request.delete(TOKEN + '__pointer-calls');
+  });
+
+  test('switches between media and trackpad views and remembers the choice', async ({ page }) => {
+    await page.goto(PAD);
+    await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+    await page.getByRole('radio', { name: 'Trackpad' }).check();
+    await expect(pad(page)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Play' })).toBeHidden();
+    await page.reload();
+    await expect(pad(page)).toBeVisible();
+    await page.getByRole('radio', { name: 'Media' }).check();
+    await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+    await expect(pad(page)).toBeHidden();
+  });
+
+  async function openPad(page) {
+    await page.goto(PAD);
+    await page.getByRole('radio', { name: 'Trackpad' }).check();
+    return (await pad(page).boundingBox());
+  }
+
+  test('dragging moves the pointer in the drag direction', async ({ page }) => {
+    const box = await openPad(page);
+    await page.mouse.move(box.x + 40, box.y + 100);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 140, box.y + 70, { steps: 10 });
+    await page.mouse.up();
+    await expect.poll(async () => (await calls(page)).filter(([op]) => op === 'move').reduce((s, [, dx]) => s + dx, 0)).toBeGreaterThan(100);
+    const moves = (await calls(page)).filter(([op]) => op === 'move');
+    expect(moves.reduce((s, [, , dy]) => s + dy, 0)).toBeLessThan(0);
+    expect((await calls(page)).some(([op]) => op === 'click')).toBe(false);
+  });
+
+  test('tap clicks, double tap double-clicks', async ({ page }) => {
+    const box = await openPad(page);
+    await page.mouse.click(box.x + 50, box.y + 50);
+    await expect.poll(() => calls(page)).toEqual([['click', 'left', 1]]);
+    await page.waitForTimeout(400);
+    await page.mouse.click(box.x + 50, box.y + 50);
+    await page.mouse.click(box.x + 50, box.y + 50);
+    await expect.poll(() => calls(page)).toEqual([['click', 'left', 1], ['click', 'left', 1], ['click', 'left', 2]]);
+  });
+
+  test('two-finger tap right-clicks and two-finger drag scrolls', async ({ page }) => {
+    const box = await openPad(page);
+    const touch = (type, pointerId, x, y) => pad(page).dispatchEvent(type, { pointerId, pointerType: 'touch', isPrimary: pointerId === 1, clientX: box.x + x, clientY: box.y + y });
+    await touch('pointerdown', 1, 50, 50);
+    await touch('pointerdown', 2, 90, 50);
+    await touch('pointerup', 1, 50, 50);
+    await touch('pointerup', 2, 90, 50);
+    await expect.poll(() => calls(page)).toEqual([['click', 'right', 1]]);
+
+    await page.request.delete(TOKEN + '__pointer-calls');
+    await touch('pointerdown', 1, 50, 50);
+    await touch('pointerdown', 2, 90, 50);
+    for (let y = 60; y <= 150; y += 10) {
+      await touch('pointermove', 1, 50, y);
+      await touch('pointermove', 2, 90, y);
+    }
+    await touch('pointerup', 1, 50, 150);
+    await touch('pointerup', 2, 90, 150);
+    await expect.poll(async () => (await calls(page)).filter(([op]) => op === 'scroll').reduce((s, [, , dy]) => s + dy, 0)).toBeGreaterThan(0);
+    expect((await calls(page)).some(([op]) => op === 'move' || op === 'click')).toBe(false);
+  });
+
+  test('click buttons send left and right clicks', async ({ page }) => {
+    await openPad(page);
+    await page.getByRole('button', { name: 'Left click' }).click();
+    await page.getByRole('button', { name: 'Right click' }).click();
+    await expect.poll(() => calls(page)).toEqual([['click', 'left', 1], ['click', 'right', 1]]);
+  });
+
+  test('without a token the trackpad explains it is disabled', async ({ page }) => {
+    await page.goto(ACTIVE);
+    await page.getByRole('radio', { name: 'Trackpad' }).check();
+    await expect(page.getByRole('status')).toContainText('REMOTE_CONTROL_TOKEN');
+    await page.getByRole('radio', { name: 'Media' }).check();
+    await expect(page.getByRole('status')).toBeEmpty();
+  });
+
+  test('desktop right mouse button right-clicks', async ({ page }) => {
+    const box = await openPad(page);
+    await page.mouse.click(box.x + 50, box.y + 50, { button: 'right' });
+    await expect.poll(() => calls(page)).toEqual([['click', 'right', 1]]);
+  });
+});
+
 test.describe('token auth', () => {
   test('without token shows unauthorized message', async ({ page }) => {
     await page.goto(TOKEN);

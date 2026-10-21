@@ -2,10 +2,12 @@ import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from '../src/server.js';
 import { createFakeMedia } from './fake-media.js';
+import { createFakePointer } from './fake-pointer.js';
 
 async function start(opts) {
   const media = createFakeMedia(opts);
-  const server = createServer({ media, token: opts?.token, pollMs: 50, log: () => {} });
+  const pointer = opts?.pointer;
+  const server = createServer({ media, pointer, token: opts?.token, pollMs: 50, log: () => {} });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = (method, path, body, headers = {}) =>
@@ -14,8 +16,98 @@ async function start(opts) {
       headers: body ? { 'content-type': 'application/json', ...headers } : headers,
       body: body ? JSON.stringify(body) : undefined,
     });
-  return { server, media, base, call };
+  return { server, media, pointer, base, call };
 }
+
+const AUTH = { authorization: 'Bearer s3cret' };
+
+describe('pointer control', () => {
+  let ctx;
+  before(async () => { ctx = await start({ token: 's3cret', pointer: createFakePointer() }); });
+  after(() => ctx.server.close());
+
+  test('POST /pointer/move sends rounded deltas and returns 204', async () => {
+    ctx.pointer.calls.length = 0;
+    const res = await ctx.call('POST', '/pointer/move', { dx: 2.6, dy: -4.4 }, AUTH);
+    assert.equal(res.status, 204);
+    assert.deepEqual(ctx.pointer.calls, [['move', 3, -4]]);
+  });
+
+  test('POST /pointer/move rejects invalid deltas without moving', async () => {
+    ctx.pointer.calls.length = 0;
+    for (const body of [{ dx: '5', dy: 0 }, { dx: 0 }, { dx: 2001, dy: 0 }, { dx: 0, dy: -2001 }, { dx: null, dy: 1 }]) {
+      assert.equal((await ctx.call('POST', '/pointer/move', body, AUTH)).status, 400, JSON.stringify(body));
+    }
+    const infinite = await fetch(ctx.base + '/pointer/move', { method: 'POST', headers: AUTH, body: '{"dx":1e999,"dy":0}' });
+    assert.equal(infinite.status, 400);
+    assert.deepEqual(ctx.pointer.calls, []);
+  });
+
+  test('POST /pointer/click defaults to a left single click', async () => {
+    ctx.pointer.calls.length = 0;
+    assert.equal((await ctx.call('POST', '/pointer/click', null, AUTH)).status, 204);
+    assert.equal((await ctx.call('POST', '/pointer/click', { button: 'right' }, AUTH)).status, 204);
+    assert.equal((await ctx.call('POST', '/pointer/click', { button: 'left', count: 2 }, AUTH)).status, 204);
+    assert.deepEqual(ctx.pointer.calls, [['click', 'left', 1], ['click', 'right', 1], ['click', 'left', 2]]);
+  });
+
+  test('POST /pointer/click rejects unknown buttons and counts', async () => {
+    ctx.pointer.calls.length = 0;
+    for (const body of [{ button: 'middle' }, { count: 3 }, { count: 0 }, { count: 1.5 }, { button: 1 }]) {
+      assert.equal((await ctx.call('POST', '/pointer/click', body, AUTH)).status, 400, JSON.stringify(body));
+    }
+    assert.deepEqual(ctx.pointer.calls, []);
+  });
+
+  test('POST /pointer/scroll sends rounded deltas and validates them', async () => {
+    ctx.pointer.calls.length = 0;
+    assert.equal((await ctx.call('POST', '/pointer/scroll', { dx: 0, dy: -7.6 }, AUTH)).status, 204);
+    assert.equal((await ctx.call('POST', '/pointer/scroll', { dx: 0, dy: 5000 }, AUTH)).status, 400);
+    assert.deepEqual(ctx.pointer.calls, [['scroll', 0, -8]]);
+  });
+
+  test('pointer actions leave now-playing untouched', async () => {
+    const before = await (await ctx.call('GET', '/now-playing', null, AUTH)).json();
+    await ctx.call('POST', '/pointer/move', { dx: 10, dy: 10 }, AUTH);
+    assert.deepEqual(await (await ctx.call('GET', '/now-playing', null, AUTH)).json(), before);
+  });
+
+  test('pointer routes reject missing or wrong token', async () => {
+    ctx.pointer.calls.length = 0;
+    assert.equal((await ctx.call('POST', '/pointer/click')).status, 401);
+    assert.equal((await ctx.call('POST', '/pointer/click', null, { authorization: 'Bearer wrong' })).status, 401);
+    assert.equal((await ctx.call('POST', '/pointer/click?token=s3cret')).status, 204);
+    assert.deepEqual(ctx.pointer.calls, [['click', 'left', 1]]);
+  });
+});
+
+describe('pointer control without a token', () => {
+  let ctx;
+  before(async () => { ctx = await start({ pointer: createFakePointer() }); });
+  after(() => ctx.server.close());
+
+  test('pointer routes are forbidden but media still works', async () => {
+    for (const [path, body] of [['/pointer/move', { dx: 1, dy: 1 }], ['/pointer/click'], ['/pointer/scroll', { dx: 0, dy: 1 }]]) {
+      const res = await ctx.call('POST', path, body);
+      assert.equal(res.status, 403, path);
+      assert.match((await res.json()).error, /REMOTE_CONTROL_TOKEN/);
+    }
+    assert.deepEqual(ctx.pointer.calls, []);
+    assert.equal((await ctx.call('POST', '/play')).status, 200);
+  });
+});
+
+describe('pointer control when the adapter fails', () => {
+  let ctx;
+  before(async () => { ctx = await start({ token: 's3cret', pointer: createFakePointer({ failWith: 'grant Accessibility permission' }) }); });
+  after(() => ctx.server.close());
+
+  test('returns 503 with the adapter message', async () => {
+    const res = await ctx.call('POST', '/pointer/move', { dx: 1, dy: 1 }, AUTH);
+    assert.equal(res.status, 503);
+    assert.equal((await res.json()).error, 'grant Accessibility permission');
+  });
+});
 
 describe('with an active player', () => {
   let ctx;

@@ -52,6 +52,23 @@
   .volume button { width: 44px; height: 44px; flex: none; }
   .volume button svg { width: 22px; height: 22px; }
   #message { text-align: center; color: var(--muted); font-size: 14px; margin: 0; min-height: 20px; }
+  [hidden] { display: none !important; }
+  .views { display: grid; grid-template-columns: 1fr 1fr; background: var(--track); border-radius: 10px; padding: 3px; border: 0; margin: 0; }
+  .views label { position: relative; text-align: center; padding: 6px; border-radius: 8px; font-size: 14px; cursor: pointer; color: var(--muted); }
+  .views input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+  .views label:has(input:checked) { background: var(--card); color: var(--text); font-weight: 600; }
+  .views label:has(input:focus-visible) { outline: 2px solid var(--accent); }
+  .view { display: grid; gap: 18px; }
+  #pad {
+    height: min(55dvh, 380px); border-radius: 14px; background: var(--track); border: 1px solid var(--border);
+    display: grid; place-items: center; text-align: center; color: var(--muted); font-size: 13px; padding: 16px;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  #pad:focus-visible { outline: 2px solid var(--accent); }
+  #pad.off { opacity: .45; }
+  .clicks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .clicks button { width: auto; height: 48px; border-radius: 12px; background: var(--track); font-size: 15px; }
+  .sensitivity { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -61,6 +78,12 @@
     <span>Mac Remote</span>
   </header>
 
+  <fieldset class="views" aria-label="View">
+    <label><input type="radio" name="view" value="media" checked> Media</label>
+    <label><input type="radio" name="view" value="pad"> Trackpad</label>
+  </fieldset>
+
+  <section class="view" id="media-view">
   <div class="art" id="art" aria-hidden="true">♪</div>
 
   <div class="meta" aria-live="polite">
@@ -84,6 +107,16 @@
     <button id="mute" aria-label="Mute" aria-pressed="false"><svg viewBox="0 0 24 24"><path id="mute-icon" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg></button>
     <input id="volume" type="range" min="0" max="100" value="0" aria-label="Volume">
   </div>
+  </section>
+
+  <section class="view" id="pad-view" hidden>
+    <div id="pad" role="region" aria-label="Trackpad">Drag to move · tap to click<br>Two-finger tap to right-click · two-finger drag to scroll</div>
+    <div class="clicks">
+      <button id="left-click">Left click</button>
+      <button id="right-click">Right click</button>
+    </div>
+    <label class="sensitivity">Speed <input id="sensitivity" type="range" min="0.5" max="4" step="0.1" value="1.5" aria-label="Sensitivity"></label>
+  </section>
 
   <p id="message" role="status"></p>
 </main>
@@ -95,6 +128,7 @@
   const ICON_MUTED = 'M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zM19 12c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z';
 
   const $ = (id) => document.getElementById(id);
+  const UNAUTHORIZED = 'Unauthorized: open this page with ?token=YOUR_TOKEN';
   const token = new URLSearchParams(location.search).get('token') || '';
   const withToken = (path) => token ? `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : path;
 
@@ -155,7 +189,7 @@
         body: body ? JSON.stringify(body) : undefined,
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(res.status === 401 ? 'Unauthorized: open this page with ?token=YOUR_TOKEN' : data.error);
+      if (!res.ok) throw new Error(res.status === 401 ? UNAUTHORIZED : data.error);
       render(data);
     } catch (err) {
       $('message').textContent = err.message;
@@ -182,9 +216,122 @@
     $('elapsed').textContent = fmt(t.position);
   }, 1000);
 
+  const store = {
+    get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+  };
+
+  const NEEDS_TOKEN = 'Trackpad needs a token: open this page with ?token=YOUR_TOKEN (REMOTE_CONTROL_TOKEN on the Mac)';
+  const SERVER_NO_TOKEN = 'Trackpad is disabled: set REMOTE_CONTROL_TOKEN on the Mac and restart the server';
+  const pad = $('pad');
+  const padHint = () => (!token && !$('pad-view').hidden ? NEEDS_TOKEN : '');
+
+  function showView(view) {
+    $('media-view').hidden = view !== 'media';
+    $('pad-view').hidden = view !== 'pad';
+    document.querySelector(`input[name=view][value=${view}]`).checked = true;
+    $('message').textContent = padHint();
+  }
+  for (const radio of document.querySelectorAll('input[name=view]')) {
+    radio.onchange = () => { store.set('view', radio.value); showView(radio.value); };
+  }
+
+  async function pointerApi(path, body) {
+    if (!token) return void ($('message').textContent = NEEDS_TOKEN);
+    try {
+      const res = await fetch(withToken(path), {
+        method: 'POST',
+        headers: body ? { 'content-type': 'application/json' } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (res.ok) return;
+      const { error } = await res.json().catch(() => ({}));
+      $('message').textContent = res.status === 403 ? SERVER_NO_TOKEN : res.status === 401 ? UNAUTHORIZED : error;
+    } catch {
+      $('message').textContent = 'Connection lost, retrying…';
+    }
+  }
+
+  // Adds up deltas and keeps at most one request in flight, so a slow network can't queue a backlog of moves.
+  function coalesce(path) {
+    let dx = 0, dy = 0, busy = false;
+    async function flush() {
+      const sx = Math.trunc(Math.max(-2000, Math.min(2000, dx)));
+      const sy = Math.trunc(Math.max(-2000, Math.min(2000, dy)));
+      if (busy || (!sx && !sy)) return;
+      dx -= sx; dy -= sy;
+      busy = true;
+      await pointerApi(path, { dx: sx, dy: sy });
+      busy = false;
+      flush();
+    }
+    return (x, y) => { dx += x; dy += y; flush(); };
+  }
+  const move = coalesce('/pointer/move');
+  const scroll = coalesce('/pointer/scroll');
+  const click = (button, count = 1) => pointerApi('/pointer/click', { button, count });
+
+  const TAP_MS = 250, TAP_SLOP = 8, DOUBLE_MS = 300;
+  const touches = new Map();
+  let gesture = null;
+  let lastTap = -Infinity;
+
+  pad.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return e.button === 2 && click('right');
+    try { pad.setPointerCapture(e.pointerId); } catch {}
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    gesture ??= { start: e.timeStamp, fingers: 0, travel: 0 };
+    gesture.fingers = Math.max(gesture.fingers, touches.size);
+  });
+
+  pad.addEventListener('pointermove', (e) => {
+    const t = touches.get(e.pointerId);
+    if (!t) return;
+    const dx = e.clientX - t.x, dy = e.clientY - t.y;
+    t.x = e.clientX; t.y = e.clientY;
+    gesture.travel += Math.hypot(dx, dy);
+    if (gesture.travel < TAP_SLOP) return;
+    if (touches.size >= 2) return scroll(dx / touches.size * 2, dy / touches.size * 2);
+    if (gesture.fingers > 1) return;
+    // Faster finger movement moves the pointer further, like a laptop trackpad.
+    const gain = +$('sensitivity').value * Math.min(1 + Math.hypot(dx, dy) / 12, 3);
+    move(dx * gain, dy * gain);
+  });
+
+  function lift(e) {
+    if (!touches.delete(e.pointerId) || touches.size) return;
+    const g = gesture;
+    gesture = null;
+    const tapped = e.type === 'pointerup' && g.travel < TAP_SLOP && e.timeStamp - g.start <= TAP_MS;
+    if (!tapped || g.fingers > 1) {
+      lastTap = -Infinity;
+      return tapped && click('right');
+    }
+    const double = e.timeStamp - lastTap < DOUBLE_MS;
+    lastTap = double ? -Infinity : e.timeStamp;
+    click('left', double ? 2 : 1);
+  }
+  pad.addEventListener('pointerup', lift);
+  pad.addEventListener('pointercancel', lift);
+  pad.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  $('left-click').onclick = () => click('left');
+  $('right-click').onclick = () => click('right');
+
+  const savedSpeed = store.get('sensitivity');
+  if (savedSpeed) $('sensitivity').value = savedSpeed;
+  $('sensitivity').onchange = () => store.set('sensitivity', $('sensitivity').value);
+
+  pad.classList.toggle('off', !token);
+  showView(store.get('view') === 'pad' ? 'pad' : 'media');
+
   function connect() {
     const es = new EventSource(withToken('/events'));
-    es.onopen = () => { $('status-dot').classList.add('live'); $('message').textContent = ''; };
+    es.onopen = () => {
+      $('status-dot').classList.add('live');
+      pad.classList.toggle('off', !token);
+      $('message').textContent = padHint();
+    };
     es.onmessage = (e) => {
       const data = JSON.parse(e.data);
       if (data.error) $('message').textContent = data.error;
@@ -192,10 +339,9 @@
     };
     es.onerror = async () => {
       $('status-dot').classList.remove('live');
+      pad.classList.add('off');
       const res = await fetch(withToken('/now-playing')).catch(() => null);
-      $('message').textContent = res?.status === 401
-        ? 'Unauthorized: open this page with ?token=YOUR_TOKEN'
-        : 'Connection lost, retrying…';
+      $('message').textContent = res?.status === 401 ? UNAUTHORIZED : 'Connection lost, retrying…';
       if (res?.status === 401) es.close();
     };
   }
